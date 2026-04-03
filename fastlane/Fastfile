@@ -70,6 +70,12 @@ platform :ios do
       targets: ["LoopFollow"]
     )
 
+    update_app_identifier(
+      xcodeproj: "#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj",
+      plist_path: "LoopFollow/Info.plist",
+      app_identifier: "com.#{TEAMID}.LoopFollowCER"
+    )
+
     gym(
       export_method: "app-store",
       scheme: "LoopFollow",
