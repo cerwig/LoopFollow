@@ -76,6 +76,8 @@ platform :ios do
       app_identifier: "com.#{TEAMID}.LoopFollowCER"
     )
 
+sh("sed -i '' 's/PRODUCT_BUNDLE_IDENTIFIER = com.#{TEAMID}.LoopFollow;/PRODUCT_BUNDLE_IDENTIFIER = com.#{TEAMID}.LoopFollowCER;/g' '#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj/project.pbxproj'")
+
     gym(
       export_method: "app-store",
       scheme: "LoopFollow",
