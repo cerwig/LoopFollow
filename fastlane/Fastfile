@@ -40,7 +40,7 @@ platform :ios do
     )
 
     previous_build_number = latest_testflight_build_number(
-      app_identifier: "com.#{TEAMID}.LoopFollow",
+      app_identifier: "com.#{TEAMID}.LoopFollowCER",
       api_key: api_key,
     )
 
@@ -55,7 +55,7 @@ platform :ios do
       type: "appstore",
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
       app_identifier: [
-        "com.#{TEAMID}.LoopFollow"
+        "com.#{TEAMID}.LoopFollowCER"
       ]
     )
 
@@ -65,7 +65,7 @@ platform :ios do
 
     update_code_signing_settings(
       path: "#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj",
-      profile_name: mapping["com.#{TEAMID}.LoopFollow"],
+      profile_name: mapping["com.#{TEAMID}.LoopFollowCER"],
       code_sign_identity: "iPhone Distribution",
       targets: ["LoopFollow"]
     )
@@ -124,7 +124,7 @@ platform :ios do
       end
     end
 
-    configure_bundle_id("LoopFollow", "com.#{TEAMID}.LoopFollow", [
+    configure_bundle_id("LoopFollow", "com.#{TEAMID}.LoopFollowCER", [
       Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
     ])
     
@@ -147,7 +147,7 @@ platform :ios do
       verbose: true,
       git_basic_authorization: Base64.strict_encode64("#{GITHUB_REPOSITORY_OWNER}:#{GH_PAT}"),
       app_identifier: [
-        "com.#{TEAMID}.LoopFollow",
+        "com.#{TEAMID}.LoopFollowCER",
       ]
     )
   end
