@@ -78,7 +78,7 @@ platform :ios do
 
 project_file = "#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj/project.pbxproj"
 contents = File.read(project_file)
-new_contents = contents.gsub("com.#{TEAMID}.LoopFollow", "com.#{TEAMID}.LoopFollowCER")
+new_contents = contents.gsub(/com\.#{TEAMID}\.LoopFollow(?!CER)/, "com.#{TEAMID}.LoopFollowCER")
 File.write(project_file, new_contents)
 
     gym(
