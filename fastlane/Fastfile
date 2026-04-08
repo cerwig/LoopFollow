@@ -76,11 +76,9 @@ platform :ios do
       app_identifier: "com.#{TEAMID}.LoopFollowCER"
     )
 
-sh("grep 'PRODUCT_BUNDLE_IDENTIFIER' '#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj/project.pbxproj'")
-
 project_file = "#{GITHUB_WORKSPACE}/LoopFollow.xcodeproj/project.pbxproj"
 contents = File.read(project_file)
-new_contents = contents.gsub(/com\.#{TEAMID}\.LoopFollow(?!CER)/, "com.#{TEAMID}.LoopFollowCER")
+new_contents = contents.gsub('com.$(unique_id).LoopFollow$(app_suffix)', "com.#{TEAMID}.LoopFollowCER")
 File.write(project_file, new_contents)
 
     gym(
