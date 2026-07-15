@@ -3,16 +3,17 @@
 
 import Combine
 import Foundation
-
-protocol NightscoutSettingsViewModelDelegate: AnyObject {
-    func nightscoutSettingsDidFinish()
-}
+import SwiftUI
 
 class NightscoutSettingsViewModel: ObservableObject {
-    weak var delegate: NightscoutSettingsViewModelDelegate?
-
     private var initialURL: String
     private var initialToken: String
+
+    /// Whether the Nightscout connection is successfully verified
+    @Published var isConnected: Bool = false
+
+    /// Whether this is a fresh setup (URL was empty when view appeared)
+    private(set) var isFreshSetup: Bool = false
 
     @Published var nightscoutURL: String = Storage.shared.url.value {
         willSet {
@@ -34,6 +35,29 @@ class NightscoutSettingsViewModel: ObservableObject {
 
     @Published var nightscoutStatus: String = "Checking..."
 
+    @Published var webSocketEnabled: Bool = Storage.shared.webSocketEnabled.value {
+        didSet {
+            Storage.shared.webSocketEnabled.value = webSocketEnabled
+            if webSocketEnabled {
+                NightscoutSocketManager.shared.connectIfNeeded()
+            } else {
+                NightscoutSocketManager.shared.disconnect()
+                triggerRefresh()
+            }
+        }
+    }
+
+    @Published var webSocketStatus: String = "Disconnected"
+
+    var webSocketStatusColor: Color {
+        switch NightscoutSocketManager.shared.connectionState {
+        case .authenticated: return .green
+        case .connecting, .connected: return .orange
+        case .disconnected: return .secondary
+        case .error: return .red
+        }
+    }
+
     private var cancellables = Set<AnyCancellable>()
     private var checkStatusSubject = PassthroughSubject<Void, Never>()
     private var checkStatusWorkItem: DispatchWorkItem?
@@ -41,9 +65,11 @@ class NightscoutSettingsViewModel: ObservableObject {
     init() {
         initialURL = Storage.shared.url.value
         initialToken = Storage.shared.token.value
+        isFreshSetup = initialURL.isEmpty
 
         setupDebounce()
         checkNightscoutStatus()
+        observeWebSocketState()
     }
 
     private func setupDebounce() {
@@ -107,6 +133,7 @@ class NightscoutSettingsViewModel: ObservableObject {
 
     func updateStatusLabel(error: NightscoutUtils.NightscoutError?) {
         if let error = error {
+            isConnected = false
             switch error {
             case .invalidURL:
                 nightscoutStatus = "Invalid URL"
@@ -123,7 +150,9 @@ class NightscoutSettingsViewModel: ObservableObject {
             case .emptyAddress:
                 nightscoutStatus = "Address Empty"
             }
+            NightscoutSocketManager.shared.disconnect()
         } else {
+            isConnected = true
             let authStatus: String
             if Storage.shared.nsAdminAuth.value {
                 authStatus = "Admin"
@@ -139,7 +168,27 @@ class NightscoutSettingsViewModel: ObservableObject {
         }
     }
 
-    func dismiss() {
-        delegate?.nightscoutSettingsDidFinish()
+    private func triggerRefresh() {
+        NotificationCenter.default.post(name: NSNotification.Name("refresh"), object: nil)
+    }
+
+    private func observeWebSocketState() {
+        updateWebSocketStatus()
+        NotificationCenter.default.publisher(for: .nightscoutSocketStateChanged)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateWebSocketStatus()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func updateWebSocketStatus() {
+        switch NightscoutSocketManager.shared.connectionState {
+        case .disconnected: webSocketStatus = "Disconnected"
+        case .connecting: webSocketStatus = "Connecting..."
+        case .connected: webSocketStatus = "Connected"
+        case .authenticated: webSocketStatus = "Connected"
+        case .error: webSocketStatus = "Error"
+        }
     }
 }

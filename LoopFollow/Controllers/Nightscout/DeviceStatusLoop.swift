@@ -1,10 +1,9 @@
 // LoopFollow
 // DeviceStatusLoop.swift
 
-import Charts
 import Foundation
 import HealthKit
-import UIKit
+import SwiftUI
 
 extension MainViewController {
     func DeviceStatusLoop(formatter: ISO8601DateFormatter, lastLoopRecord: [String: AnyObject]) {
@@ -18,7 +17,7 @@ extension MainViewController {
         let lastLoopTime = Observable.shared.alertLastLoopTime.value ?? 0
 
         if lastLoopRecord["failureReason"] != nil {
-            LoopStatusLabel.text = "X"
+            Observable.shared.loopStatusText.value = "X"
             latestLoopStatusString = "X"
         } else {
             var wasEnacted = false
@@ -30,12 +29,14 @@ extension MainViewController {
             let profileISF = profileManager.currentISF()
             if let profileISF = profileISF {
                 infoManager.updateInfoData(type: .isf, value: profileISF)
+                Storage.shared.lastIsfMgdlPerU.value = profileISF.doubleValue(for: .milligramsPerDeciliter)
             }
 
             // Carb Ratio (CR)
             let profileCR = profileManager.currentCarbRatio()
             if let profileCR = profileCR {
                 infoManager.updateInfoData(type: .carbRatio, value: profileCR)
+                Storage.shared.lastCarbRatio.value = profileCR
             }
 
             // Target
@@ -47,11 +48,14 @@ extension MainViewController {
             } else if let profileTargetLow = profileTargetLow {
                 infoManager.updateInfoData(type: .target, value: profileTargetLow)
             }
+            Storage.shared.lastTargetLowMgdl.value = profileTargetLow?.doubleValue(for: .milligramsPerDeciliter)
+            Storage.shared.lastTargetHighMgdl.value = profileTargetHigh?.doubleValue(for: .milligramsPerDeciliter)
 
             // IOB
             if let insulinMetric = InsulinMetric(from: lastLoopRecord["iob"], key: "iob") {
                 infoManager.updateInfoData(type: .iob, value: insulinMetric)
                 latestIOB = insulinMetric
+                Observable.shared.iobText.value = insulinMetric.formattedValue()
             }
 
             // COB
@@ -62,8 +66,8 @@ extension MainViewController {
 
             if let predictdata = lastLoopRecord["predicted"] as? [String: AnyObject] {
                 let prediction = predictdata["values"] as! [Double]
-                PredictionLabel.text = Localizer.toDisplayUnits(String(Int(prediction.last!)))
-                PredictionLabel.textColor = UIColor.systemPurple
+                Observable.shared.predictionText.value = Localizer.toDisplayUnits(String(Int(round(prediction.last!))))
+                Observable.shared.predictionColor.value = .purple
                 if Storage.shared.downloadPrediction.value, previousLastLoopTime < lastLoopTime {
                     predictionData.removeAll()
                     var predictionTime = lastLoopTime
@@ -72,11 +76,9 @@ extension MainViewController {
                     while i <= toLoad {
                         if i < prediction.count {
                             let sgvValue = Int(round(prediction[i]))
-                            // Skip values higher than 600
-                            if sgvValue <= 600 {
-                                let prediction = ShareGlucoseData(sgv: sgvValue, date: predictionTime, direction: "flat")
-                                predictionData.append(prediction)
-                            }
+                            let clampedValue = min(max(sgvValue, globalVariables.minDisplayGlucose), globalVariables.maxDisplayGlucose)
+                            let prediction = ShareGlucoseData(sgv: clampedValue, date: predictionTime, direction: "flat")
+                            predictionData.append(prediction)
                             predictionTime += 300
                         }
                         i += 1
@@ -87,6 +89,8 @@ extension MainViewController {
                         let formattedMax = Localizer.toDisplayUnits(String(predMax))
                         let value = "\(formattedMin)/\(formattedMax)"
                         infoManager.updateInfoData(type: .minMax, value: value)
+                        Storage.shared.lastMinBgMgdl.value = predMin
+                        Storage.shared.lastMaxBgMgdl.value = predMax
                     }
 
                     updatePredictionGraph()
@@ -108,16 +112,27 @@ extension MainViewController {
                         lastBGTime = bgData[bgData.count - 1].date
                     }
                     if tempBasalTime > lastBGTime, !wasEnacted {
-                        LoopStatusLabel.text = "⏀"
+                        Observable.shared.loopStatusText.value = "⏀"
                         latestLoopStatusString = "⏀"
                     } else {
-                        LoopStatusLabel.text = "↻"
+                        Observable.shared.loopStatusText.value = "↻"
                         latestLoopStatusString = "↻"
                     }
                 }
             } else {
-                LoopStatusLabel.text = "↻"
+                Observable.shared.loopStatusText.value = "↻"
                 latestLoopStatusString = "↻"
+            }
+
+            // Live Activity storage
+            Storage.shared.lastIOB.value = latestIOB?.value
+            Storage.shared.lastCOB.value = latestCOB?.value
+            if let predictdata = lastLoopRecord["predicted"] as? [String: AnyObject],
+               let values = predictdata["values"] as? [Double]
+            {
+                Storage.shared.projectedBgMgdl.value = values.last
+            } else {
+                Storage.shared.projectedBgMgdl.value = nil
             }
         }
     }

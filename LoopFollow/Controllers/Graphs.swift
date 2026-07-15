@@ -7,6 +7,22 @@ import UIKit
 
 import Charts
 
+/// Fill colors for the override and temp-target bars on the BG graph.
+///
+/// Loop draws overrides green and temp targets purple, while Trio (and other
+/// OpenAPS-based algorithms) use the inverse — overrides purple, temp targets
+/// green. We follow the active backend's convention so the colors match the
+/// looping app the user is running.
+enum TreatmentGraphColors {
+    static var override: NSUIColor {
+        Storage.shared.device.value == "Loop" ? .systemGreen : .systemPurple
+    }
+
+    static var tempTarget: NSUIColor {
+        Storage.shared.device.value == "Loop" ? .systemPurple : .systemGreen
+    }
+}
+
 enum GraphDataIndex: Int {
     case bg = 0
     case prediction = 1
@@ -26,6 +42,8 @@ enum GraphDataIndex: Int {
     case uamPrediction = 15
     case smb = 16
     case tempTarget = 17
+    case predictionCone = 18
+    case yesterday = 19
 }
 
 extension GraphDataIndex {
@@ -49,6 +67,8 @@ extension GraphDataIndex {
         case .uamPrediction: return "UAM Prediction"
         case .smb: return "SMB"
         case .tempTarget: return "Temp Target"
+        case .predictionCone: return "Prediction Cone"
+        case .yesterday: return "Yesterday"
         }
     }
 }
@@ -56,8 +76,9 @@ extension GraphDataIndex {
 class CompositeRenderer: LineChartRenderer {
     let tempTargetRenderer: TempTargetRenderer
     let triangleRenderer: TriangleRenderer
+    let coneRenderer: ConeOfUncertaintyRenderer
 
-    init(dataProvider: LineChartDataProvider?, animator: Animator?, viewPortHandler: ViewPortHandler?, tempTargetDataSetIndex: Int, smbDataSetIndex: Int) {
+    init(dataProvider: LineChartDataProvider?, animator: Animator?, viewPortHandler: ViewPortHandler?, tempTargetDataSetIndex: Int, smbDataSetIndex: Int, coneDataSetIndex: Int) {
         tempTargetRenderer = TempTargetRenderer(
             dataProvider: dataProvider,
             animator: animator,
@@ -70,11 +91,18 @@ class CompositeRenderer: LineChartRenderer {
             viewPortHandler: viewPortHandler,
             smbDataSetIndex: smbDataSetIndex
         )
+        coneRenderer = ConeOfUncertaintyRenderer(
+            dataProvider: dataProvider,
+            animator: animator,
+            viewPortHandler: viewPortHandler,
+            coneDataSetIndex: coneDataSetIndex
+        )
         super.init(dataProvider: dataProvider!, animator: animator!, viewPortHandler: viewPortHandler!)
     }
 
     override func drawExtras(context: CGContext) {
         super.drawExtras(context: context)
+        coneRenderer.drawExtras(context: context)
         tempTargetRenderer.drawExtras(context: context)
         triangleRenderer.drawExtras(context: context)
     }
@@ -191,7 +219,7 @@ class TempTargetRenderer: LineChartRenderer {
                 }
 
                 context.saveGState()
-                context.setFillColor(NSUIColor.systemPurple.withAlphaComponent(0.5).cgColor)
+                context.setFillColor(TreatmentGraphColors.tempTarget.withAlphaComponent(0.5).cgColor)
                 context.fill(rect)
                 context.restoreGState()
             }
@@ -201,16 +229,22 @@ class TempTargetRenderer: LineChartRenderer {
 
 let ScaleXMax: Double = 150.0
 extension MainViewController {
+    private func graphRangeThresholds() -> (low: Double, high: Double) {
+        UnitSettingsStore.shared.effectiveThresholds()
+    }
+
     func updateChartRenderers() {
         let tempTargetDataIndex = GraphDataIndex.tempTarget.rawValue
         let smbDataIndex = GraphDataIndex.smb.rawValue
+        let coneDataIndex = GraphDataIndex.predictionCone.rawValue
 
         let compositeRenderer = CompositeRenderer(
             dataProvider: BGChart,
             animator: BGChart.chartAnimator,
             viewPortHandler: BGChart.viewPortHandler,
             tempTargetDataSetIndex: tempTargetDataIndex,
-            smbDataSetIndex: smbDataIndex
+            smbDataSetIndex: smbDataIndex,
+            coneDataSetIndex: coneDataIndex
         )
         BGChart.renderer = compositeRenderer
 
@@ -365,7 +399,7 @@ extension MainViewController {
         lineOverride.lineWidth = 0
         lineOverride.drawFilledEnabled = true
         lineOverride.fillFormatter = OverrideFillFormatter()
-        lineOverride.fillColor = NSUIColor.systemGreen
+        lineOverride.fillColor = TreatmentGraphColors.override
         lineOverride.fillAlpha = 0.6
         lineOverride.drawCirclesEnabled = false
         lineOverride.axisDependency = YAxis.AxisDependency.right
@@ -595,7 +629,26 @@ extension MainViewController {
         data.append(COBlinePrediction) // Dataset 14
         data.append(UAMlinePrediction) // Dataset 15
         data.append(lineSmb) // Dataset 16
-        data.append(lineTempTarget)
+        data.append(lineTempTarget) // Dataset 17
+
+        // Dataset 18: Prediction Cone (rendered via ConeOfUncertaintyRenderer)
+        let lineCone = LineChartDataSet(entries: [ChartDataEntry](), label: "")
+        lineCone.lineWidth = 0
+        lineCone.drawCirclesEnabled = false
+        lineCone.drawValuesEnabled = false
+        lineCone.highlightEnabled = false
+        lineCone.axisDependency = YAxis.AxisDependency.right
+        data.append(lineCone)
+
+        // Dataset 19: Yesterday's BG comparison overlay (thin dimmed gray line, no dots)
+        let lineYesterday = LineChartDataSet(entries: [ChartDataEntry](), label: "")
+        lineYesterday.lineWidth = 1.5
+        lineYesterday.setColor(NSUIColor.systemGray, alpha: 0.4)
+        lineYesterday.drawCirclesEnabled = false
+        lineYesterday.drawValuesEnabled = false
+        lineYesterday.highlightEnabled = false
+        lineYesterday.axisDependency = YAxis.AxisDependency.right
+        data.append(lineYesterday)
 
         data.setValueFont(UIFont.systemFont(ofSize: 12))
 
@@ -606,15 +659,17 @@ extension MainViewController {
         // Clear limit lines so they don't add multiples when changing the settings
         BGChart.rightAxis.removeAllLimitLines()
 
-        // Add lower red line based on low alert value
+        let thresholds = graphRangeThresholds()
+
+        // Add lower red line
         let ll = ChartLimitLine()
-        ll.limit = Storage.shared.lowLine.value
+        ll.limit = thresholds.low
         ll.lineColor = NSUIColor.systemRed.withAlphaComponent(0.5)
         BGChart.rightAxis.addLimitLine(ll)
 
-        // Add upper yellow line based on low alert value
+        // Add upper yellow line
         let ul = ChartLimitLine()
-        ul.limit = Storage.shared.highLine.value
+        ul.limit = thresholds.high
         ul.lineColor = NSUIColor.systemYellow.withAlphaComponent(0.5)
         BGChart.rightAxis.addLimitLine(ul)
 
@@ -765,15 +820,17 @@ extension MainViewController {
         // Clear limit lines so they don't add multiples when changing the settings
         BGChart.rightAxis.removeAllLimitLines()
 
-        // Add lower red line based on low alert value
+        let thresholds = graphRangeThresholds()
+
+        // Add lower red line
         let ll = ChartLimitLine()
-        ll.limit = Storage.shared.lowLine.value
+        ll.limit = thresholds.low
         ll.lineColor = NSUIColor.systemRed.withAlphaComponent(0.5)
         BGChart.rightAxis.addLimitLine(ll)
 
-        // Add upper yellow line based on low alert value
+        // Add upper yellow line
         let ul = ChartLimitLine()
-        ul.limit = Storage.shared.highLine.value
+        ul.limit = thresholds.high
         ul.lineColor = NSUIColor.systemYellow.withAlphaComponent(0.5)
         BGChart.rightAxis.addLimitLine(ul)
 
@@ -783,6 +840,14 @@ extension MainViewController {
         BGChart.data?.dataSets[dataIndex].notifyDataSetChanged()
         BGChart.data?.notifyDataChanged()
         BGChart.notifyDataSetChanged()
+
+        // Reflect the yesterday overlay toggle immediately, and reload the BG window
+        // so the extra day of history is fetched (or dropped) when the toggle changed.
+        updateYesterdayBGGraph()
+        TaskScheduler.shared.rescheduleTask(id: .fetchBG, to: Date())
+
+        // Re-render prediction display in case display type changed
+        updateOpenAPSPredictionDisplay()
     }
 
     func updateBGGraph() {
@@ -800,17 +865,22 @@ extension MainViewController {
         var colors = [NSUIColor]()
 
         topBG = Storage.shared.minBGScale.value
+        let thresholds = graphRangeThresholds()
         for i in 0 ..< entries.count {
-            if Double(entries[i].sgv) > topBG - maxBGOffset {
-                topBG = Double(entries[i].sgv) + maxBGOffset
+            // Clamp the plotted y-value to the same bounds the header text uses
+            // (HIGH/LOW), so the graph stays consistent with the main display.
+            // The pill tooltip still shows the raw reading.
+            let plottedSgv = Double(min(max(entries[i].sgv, globalVariables.minDisplayGlucose), globalVariables.maxDisplayGlucose))
+            if plottedSgv > topBG - maxBGOffset {
+                topBG = plottedSgv + maxBGOffset
             }
-            let value = ChartDataEntry(x: Double(entries[i].date), y: Double(entries[i].sgv), data: formatPillText(line1: Localizer.toDisplayUnits(String(entries[i].sgv)), time: entries[i].date))
+            let value = ChartDataEntry(x: Double(entries[i].date), y: plottedSgv, data: formatPillText(line1: Localizer.toDisplayUnits(String(entries[i].sgv)), time: entries[i].date))
             mainChart.append(value)
             smallChart.append(value)
 
-            if Double(entries[i].sgv) >= Storage.shared.highLine.value {
+            if Double(entries[i].sgv) >= thresholds.high {
                 colors.append(NSUIColor.systemYellow)
-            } else if Double(entries[i].sgv) <= Storage.shared.lowLine.value {
+            } else if Double(entries[i].sgv) <= thresholds.low {
                 colors.append(NSUIColor.systemRed)
             } else {
                 colors.append(NSUIColor.systemGreen)
@@ -845,7 +915,16 @@ extension MainViewController {
         BGChartFull.data?.notifyDataChanged()
         BGChartFull.notifyDataSetChanged()
 
-        if firstGraphLoad {
+        updateYesterdayBGGraph()
+
+        // The initial zoom is a one-shot, relative to the chart's current
+        // viewport. Skip it until the chart actually has a width — otherwise a
+        // refresh that lands while the view is loaded but off-screen (e.g. Home
+        // lives in the Menu, so MainViewController is force-loaded headless by
+        // bootstrap()) would consume firstGraphLoad against a zero-size viewport
+        // and leave the main graph blank. viewDidAppear re-runs updateBGGraph
+        // once a real frame exists, applying the zoom correctly.
+        if firstGraphLoad, BGChart.bounds.width > 0 {
             var scaleX = CGFloat(Storage.shared.chartScaleX.value)
             if scaleX > CGFloat(ScaleXMax) {
                 scaleX = CGFloat(ScaleXMax)
@@ -860,6 +939,32 @@ extension MainViewController {
         if autoScrollPauseUntil == nil || Date() > autoScrollPauseUntil! {
             BGChart.moveViewToAnimated(xValue: dateTimeUtils.getNowTimeIntervalUTC() - (BGChart.visibleXRange * 0.7), yValue: 0.0, axis: .right, duration: 1, easingOption: .easeInBack)
         }
+    }
+
+    // Populates (or clears) the dimmed "yesterday" comparison overlay on the main graph.
+    // Points in yesterdayBGData are already shifted +24h so they align with today's clock time.
+    func updateYesterdayBGGraph() {
+        let dataIndex = GraphDataIndex.yesterday.rawValue
+        guard let lineData = BGChart.lineData,
+              dataIndex < lineData.dataSets.count,
+              let dataSet = lineData.dataSets[dataIndex] as? LineChartDataSet
+        else {
+            return
+        }
+
+        dataSet.removeAll(keepingCapacity: false)
+
+        if Storage.shared.showYesterdayLine.value {
+            for entry in yesterdayBGData {
+                // Clamp the plotted y-value to the same bounds the main BG line uses.
+                let plottedSgv = Double(min(max(entry.sgv, globalVariables.minDisplayGlucose), globalVariables.maxDisplayGlucose))
+                dataSet.append(ChartDataEntry(x: entry.date, y: plottedSgv))
+            }
+        }
+
+        BGChart.data?.dataSets[dataIndex].notifyDataSetChanged()
+        BGChart.data?.notifyDataChanged()
+        BGChart.notifyDataSetChanged()
     }
 
     func updatePredictionGraph(color: UIColor? = nil) {
@@ -1111,12 +1216,15 @@ extension MainViewController {
             formatter.maximumFractionDigits = 2
             formatter.minimumIntegerDigits = 1
 
-            var valueString: String = formatter.string(from: NSNumber(value: carbData[i].value))!
+            let carbAmountString = formatter.string(from: NSNumber(value: carbData[i].value))!
+            var valueString = carbAmountString
+            var markerLine1 = carbAmountString + "g"
 
             var hours = 3
             if carbData[i].absorptionTime > 0, Storage.shared.showAbsorption.value {
                 hours = carbData[i].absorptionTime / 60
                 valueString += " " + String(hours) + "h"
+                markerLine1 += " " + String(hours) + "h"
             }
 
             // Check overlapping carbs to shift left if needed
@@ -1133,7 +1241,7 @@ extension MainViewController {
                 dateTimeStamp = dateTimeStamp - 250
             }
 
-            let dot = ChartDataEntry(x: Double(dateTimeStamp), y: Double(carbData[i].sgv), data: valueString + "\r\r" + formatPillText(line1: valueString + " g", time: carbData[i].date))
+            let dot = ChartDataEntry(x: Double(dateTimeStamp), y: Double(carbData[i].sgv), data: valueString + "\r\r" + formatPillText(line1: markerLine1, time: carbData[i].date))
             BGChart.data?.dataSets[dataIndex].addEntry(dot)
             if Storage.shared.smallGraphTreatments.value {
                 BGChartFull.data?.dataSets[dataIndex].addEntry(dot)
@@ -1413,7 +1521,7 @@ extension MainViewController {
         lineOverride.lineWidth = 0
         lineOverride.drawFilledEnabled = true
         lineOverride.fillFormatter = OverrideFillFormatter()
-        lineOverride.fillColor = NSUIColor.systemGreen
+        lineOverride.fillColor = TreatmentGraphColors.override
         lineOverride.fillAlpha = 0.6
         lineOverride.drawCirclesEnabled = false
         lineOverride.axisDependency = YAxis.AxisDependency.right
@@ -1598,7 +1706,16 @@ extension MainViewController {
         data.append(COBlinePrediction) // Dataset 14
         data.append(UAMlinePrediction) // Dataset 15
         data.append(lineSmb) // Dataset 16
-        data.append(lineTempTarget)
+        data.append(lineTempTarget) // Dataset 17
+
+        // Dataset 18: Prediction Cone placeholder (not rendered on small chart)
+        let lineConeSmall = LineChartDataSet(entries: [ChartDataEntry](), label: "")
+        lineConeSmall.lineWidth = 0
+        lineConeSmall.drawCirclesEnabled = false
+        lineConeSmall.drawValuesEnabled = false
+        lineConeSmall.highlightEnabled = false
+        lineConeSmall.axisDependency = YAxis.AxisDependency.right
+        data.append(lineConeSmall)
 
         BGChartFull.highlightPerDragEnabled = true
         BGChartFull.leftAxis.enabled = false
@@ -1627,6 +1744,9 @@ extension MainViewController {
         var smallChart = BGChartFull.lineData!.dataSets[dataIndex] as! LineChartDataSet
         chart.clear()
         smallChart.clear()
+        // Refresh the fill color in case the backend (Loop vs Trio) changed.
+        chart.fillColor = TreatmentGraphColors.override
+        smallChart.fillColor = TreatmentGraphColors.override
         let thisData = overrideGraphData
 
         var colors = [NSUIColor]()
@@ -1892,6 +2012,106 @@ extension MainViewController {
             return wrappedLine1 + "\r\n" + line2 + "\r\n" + formattedDate
         } else {
             return wrappedLine1 + "\r\n" + formattedDate
+        }
+    }
+
+    func updateConeGraph(coneData: [ConeChartDataEntry]) {
+        let dataIndex = GraphDataIndex.predictionCone.rawValue
+        let mainChart = BGChart.lineData!.dataSets[dataIndex] as! LineChartDataSet
+        mainChart.clear()
+        for entry in coneData {
+            mainChart.addEntry(entry)
+        }
+        BGChart.rightAxis.axisMaximum = Double(calculateMaxBgGraphValue())
+        updateChartRenderers()
+    }
+
+    func clearConeGraph() {
+        let dataIndex = GraphDataIndex.predictionCone.rawValue
+        guard let lineData = BGChart.lineData, lineData.dataSets.count > dataIndex else { return }
+        lineData.dataSets[dataIndex].clear()
+        BGChart.data?.dataSets[dataIndex].notifyDataSetChanged()
+        BGChart.data?.notifyDataChanged()
+        BGChart.notifyDataSetChanged()
+    }
+
+    func updateOpenAPSPredictionDisplay() {
+        guard let predBGs = openAPSPredBGs else { return }
+
+        // Cone is only for OpenAPS-based systems; Loop always uses lines
+        let displayType: PredictionDisplayType = Storage.shared.device.value == "Loop" ? .lines : Storage.shared.predictionDisplayType.value
+        let toLoad = Int(Storage.shared.predictionToLoad.value * 12)
+        let predictionStart = openAPSPredUpdatedTime ?? Date().timeIntervalSince1970
+
+        let predictionTypes: [(type: String, colorName: String, dataIndex: Int)] = [
+            ("ZT", "ZT", GraphDataIndex.ztPrediction.rawValue),
+            ("IOB", "Insulin", GraphDataIndex.iobPrediction.rawValue),
+            ("COB", "LoopYellow", GraphDataIndex.cobPrediction.rawValue),
+            ("UAM", "UAM", GraphDataIndex.uamPrediction.rawValue),
+        ]
+
+        topPredictionBG = Storage.shared.minBGScale.value
+
+        if displayType == .cone {
+            var allArrays = [[Double]]()
+            for (type, _, _) in predictionTypes {
+                if let arr = predBGs[type], !arr.isEmpty {
+                    allArrays.append(arr)
+                }
+            }
+
+            var coneData = [ConeChartDataEntry]()
+            if !allArrays.isEmpty {
+                // Cap at the shortest predBG array length so every cone point uses
+                // the same set of contributing arrays. Matches Trio's ForecastSetup.
+                let coneLength = min(allArrays.map { $0.count }.min()!, toLoad + 1)
+                var t = predictionStart
+                for i in 0 ..< coneLength {
+                    var valuesAtIndex = [Double]()
+                    for arr in allArrays where i < arr.count {
+                        valuesAtIndex.append(arr[i])
+                    }
+                    if !valuesAtIndex.isEmpty {
+                        var yMin = max(valuesAtIndex.min()!, Double(globalVariables.minDisplayGlucose))
+                        var yMax = min(valuesAtIndex.max()!, Double(globalVariables.maxDisplayGlucose))
+                        // Ensure minimum ±1 mg/dL range so the cone is visible when predictions agree
+                        if yMin == yMax {
+                            yMin -= 1
+                            yMax += 1
+                        }
+                        coneData.append(ConeChartDataEntry(x: t, yMin: yMin, yMax: yMax))
+                        if yMax > topPredictionBG - 20 { topPredictionBG = yMax + 20 }
+                    }
+                    t += 300
+                }
+            }
+
+            updateConeGraph(coneData: coneData)
+
+            // Clear individual prediction lines
+            for (_, _, dataIndex) in predictionTypes {
+                updatePredictionGraphGeneric(dataIndex: dataIndex, predictionData: [], chartLabel: "", color: .clear)
+            }
+
+        } else {
+            clearConeGraph()
+
+            for (type, colorName, dataIndex) in predictionTypes {
+                var predictionData = [ShareGlucoseData]()
+                if let graphdata = predBGs[type] {
+                    var t = predictionStart
+                    for i in 0 ... toLoad {
+                        if i < graphdata.count {
+                            let v = graphdata[i]
+                            let clamped = min(max(Int(round(v)), globalVariables.minDisplayGlucose), globalVariables.maxDisplayGlucose)
+                            predictionData.append(ShareGlucoseData(sgv: clamped, date: t, direction: "flat"))
+                            t += 300
+                        }
+                    }
+                }
+                let color = UIColor(named: colorName) ?? UIColor.systemPurple
+                updatePredictionGraphGeneric(dataIndex: dataIndex, predictionData: predictionData, chartLabel: type, color: color)
+            }
         }
     }
 
